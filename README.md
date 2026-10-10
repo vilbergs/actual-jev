@@ -32,6 +32,9 @@ docker run -d --name actual-http-api \
   jhonderson/actual-http-api:26.10.0
 ```
 
+Hosting Actual on Fly.io? `deploy/actual-api/` has a `fly.toml` and the steps to run the
+sidecar there.
+
 Everything that touches Actual goes through the `ActualStore` trait in `src/actual`, so a
 native Rust sync client can replace the sidecar later without changing anything else.
 

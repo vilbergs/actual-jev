@@ -1,0 +1,32 @@
+# actual-http-api on Fly.io, next to your Actual server.
+# Edit the three placeholders, then: fly launch --copy-config --no-deploy && fly deploy
+# Pin the image tag to the version your Actual server runs.
+
+app = "actual-api"                     # must be unique on Fly
+primary_region = "arn"                 # same region as your Actual app
+
+[build]
+image = "jhonderson/actual-http-api:26.10.0"
+
+[env]
+ACTUAL_SERVER_URL = "http://your-actual-app.internal:5006/"   # Fly app name of your Actual instance
+ACTUAL_DATA_DIR = "/data"
+NODE_ENV = "production"
+PORT = "5007"
+# Limit the API to one budget (Settings → Advanced settings → Sync ID):
+# ALLOWED_BUDGET_SYNC_IDS = "00000000-0000-0000-0000-000000000000"
+
+[mounts]
+source = "actual_api_data"
+destination = "/data"
+
+[http_service]
+internal_port = 5007
+force_https = true
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 0
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "512mb"
