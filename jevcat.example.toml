@@ -1,0 +1,49 @@
+# Copy to jevcat.toml. Secrets never go here; they are read from the environment:
+#   ACTUAL_HTTP_API_KEY          the API_KEY you gave actual-http-api
+#   ACTUAL_ENCRYPTION_PASSWORD   only if the budget is end-to-end encrypted
+#   TYPESAFE_API_KEY             from your TypeSafe account
+
+[actual]
+base_url = "http://localhost:5007"
+budget_sync_id = "00000000-0000-0000-0000-000000000000"   # Settings → Advanced settings → Sync ID
+since_days = 90                                            # how far back `run` and `calibrate` look
+
+[jev]
+# base_url = "https://api.typesafe.ai"
+# model = "jev-latest"
+# instructions = "Which budget category does this bank transaction belong to?"
+# unsure_label = "Unsure"
+concurrency = 4
+timeout_secs = 30
+max_retries = 2
+
+# Rubric text per category. This is the main lever on accuracy: say what belongs
+# and what does not. Categories without an entry get their group name as the hint.
+[jev.descriptions]
+"Groceries" = "Supermarkets and food stores, not restaurants or takeaway"
+"Restaurants" = "Eating out, takeaway, cafés, bars"
+"Transport" = "Public transport, fuel, parking, taxis"
+
+[policy]
+apply_threshold = 0.85   # run `jevcat calibrate` and paste its suggestion here
+
+[tags]
+# applied = "#jev"
+# flagged = "#jev-flag"
+# missed = "#jev-miss"
+
+# Only for `jevcat import <file.csv>`. Column names must match the CSV header
+# exactly (case-insensitive). Set has_header = false and use 0-based indexes
+# for exports without one.
+[import]
+account = "Checking"            # Actual account name or id; --account overrides
+delimiter = ";"
+has_header = true
+skip_rows = 0                   # lines of preamble before the header
+date_column = "Bokföringsdag"
+date_format = "%Y-%m-%d"
+amount_column = "Belopp"
+payee_column = "Rubrik"
+notes_column = "Meddelande"     # optional
+# id_column = "Transaktionsid"  # optional: a column unique per row, used for de-duplication
+payee_normalization = "title-case"   # or "original" to keep the bank's casing
