@@ -4,6 +4,7 @@ mod classify;
 mod config;
 mod filter;
 mod import;
+mod learn;
 mod policy;
 mod run;
 mod tags;
@@ -61,6 +62,15 @@ enum Command {
         /// Retry transactions tagged as missed on an earlier run.
         #[arg(long)]
         rerun_missed: bool,
+    },
+    /// Create Actual rules for payees Jev has placed consistently, without calling Jev.
+    Learn {
+        /// Write the rules to Actual.
+        #[arg(long)]
+        apply: bool,
+        /// How many agreeing applies a payee needs. Defaults to policy.learn_after.
+        #[arg(long)]
+        after: Option<usize>,
     },
     /// Import a bank CSV into an account, then categorize what the import added.
     Import {
@@ -154,6 +164,7 @@ async fn main() -> Result<()> {
                 apply_threshold: config.policy.apply_threshold,
                 concurrency: config.jev.concurrency,
                 only_ids: None,
+                learn_after: config.policy.learn_after,
             };
             if !apply {
                 println!("Dry run: nothing is written. Pass --apply to write.\n");
@@ -168,6 +179,24 @@ async fn main() -> Result<()> {
             )
             .await?;
             print!("{}", summary.render(apply));
+        }
+        Command::Learn { apply, after } => {
+            let learn_after = after.unwrap_or(config.policy.learn_after).max(1);
+            if !apply {
+                println!("Dry run: nothing is written. Pass --apply to write.\n");
+            }
+            let created = run::learn_rules(
+                &store as &dyn ActualStore,
+                &snapshot,
+                &taxonomy,
+                &[],
+                &config.tags.applied,
+                learn_after,
+                apply,
+            )
+            .await?;
+            let verb = if apply { "created" } else { "would create" };
+            println!("\n{verb} {created} rules");
         }
         Command::Import {
             csv,
@@ -246,6 +275,7 @@ async fn main() -> Result<()> {
                 apply_threshold: config.policy.apply_threshold,
                 concurrency: config.jev.concurrency,
                 only_ids: Some(result.added.iter().cloned().collect::<HashSet<_>>()),
+                learn_after: config.policy.learn_after,
             };
             let summary = run::run(
                 &store as &dyn ActualStore,

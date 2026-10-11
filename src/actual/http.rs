@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use super::{
-    Account, ActualStore, CategoryGroup, ImportOptions, ImportResult, NewTransaction, Payee,
+    Account, ActualStore, CategoryGroup, ImportOptions, ImportResult, NewTransaction, Payee, Rule,
     Transaction, TransactionPatch,
 };
 
@@ -142,5 +142,26 @@ impl ActualStore for HttpStore {
         let envelope: Envelope<ImportResult> =
             serde_json::from_str(&body).with_context(|| format!("decoding {url}: {body}"))?;
         Ok(envelope.data)
+    }
+
+    async fn rules(&self) -> Result<Vec<Rule>> {
+        self.get("rules", &[]).await
+    }
+
+    async fn create_rule(&self, rule: &Rule) -> Result<()> {
+        let url = self.url("rules");
+        let response = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({ "rule": rule }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("POST {url} returned {status}: {body}");
+        }
+        Ok(())
     }
 }

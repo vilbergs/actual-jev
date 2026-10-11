@@ -1,4 +1,4 @@
-//! One pass over the budget: load, filter, classify, decide, write.
+//! One pass over the budget: load, filter, classify, decide, write, learn.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use crate::actual::{ActualStore, Snapshot, Transaction, TransactionPatch};
 use crate::classify::{Classifier, Subject, Taxonomy};
 use crate::config::TagConfig;
 use crate::filter::{Filter, Skip};
+use crate::learn::{self, Applied};
 use crate::policy::{self, Action};
 use crate::tags;
 
@@ -21,6 +22,8 @@ pub struct RunOptions {
     pub concurrency: usize,
     /// When set, only these transaction ids are considered (the rows an import just added).
     pub only_ids: Option<HashSet<String>>,
+    /// Create an Actual rule for a payee once this many confident applies agree. 0 disables.
+    pub learn_after: usize,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -31,6 +34,7 @@ pub struct Summary {
     pub flagged: usize,
     pub missed: usize,
     pub failed: usize,
+    pub rules_created: usize,
     pub input_tokens: u64,
 }
 
@@ -124,6 +128,9 @@ pub async fn run(
         .collect()
         .await;
 
+    let mode = if options.apply { "apply" } else { "dry-run" };
+    let mut applied_now: Vec<Applied> = Vec::new();
+
     for (tx, outcome) in outcomes {
         let (action, tokens) = match outcome {
             Ok(value) => value,
@@ -135,36 +142,38 @@ pub async fn run(
         };
         summary.input_tokens += tokens;
         let patch = patch_for(&action, tx, tags);
-        let mode = if options.apply { "apply" } else { "dry-run" };
         let subject = Subject::from_transaction(tx, snapshot);
+        let payee = truncate(&subject.payee, 32);
         match &action {
             Action::Apply {
-                label, confidence, ..
+                category_id,
+                label,
+                confidence,
             } => {
                 summary.applied += 1;
                 println!(
-                    "{mode}  APPLY  {date}  {amount:>10.2}  {payee:<32}  -> {label} ({confidence:.2})",
-                    date = tx.date,
-                    amount = subject.amount,
-                    payee = truncate(&subject.payee, 32),
+                    "{mode}  APPLY  {}  {:>10.2}  {payee:<32}  -> {label} ({confidence:.2})",
+                    tx.date, subject.amount
                 );
+                if let Some(payee_id) = tx.payee.clone() {
+                    applied_now.push(Applied {
+                        payee_id,
+                        category_id: category_id.clone(),
+                    });
+                }
             }
             Action::Flag { label, confidence } => {
                 summary.flagged += 1;
                 println!(
-                    "{mode}  FLAG   {date}  {amount:>10.2}  {payee:<32}  ?  {label} ({confidence:.2})",
-                    date = tx.date,
-                    amount = subject.amount,
-                    payee = truncate(&subject.payee, 32),
+                    "{mode}  FLAG   {}  {:>10.2}  {payee:<32}  ?  {label} ({confidence:.2})",
+                    tx.date, subject.amount
                 );
             }
             Action::Skip { label, confidence } => {
                 summary.missed += 1;
                 println!(
-                    "{mode}  MISS   {date}  {amount:>10.2}  {payee:<32}  {label} ({confidence:.2})",
-                    date = tx.date,
-                    amount = subject.amount,
-                    payee = truncate(&subject.payee, 32),
+                    "{mode}  MISS   {}  {:>10.2}  {payee:<32}  {label} ({confidence:.2})",
+                    tx.date, subject.amount
                 );
             }
         }
@@ -173,7 +182,50 @@ pub async fn run(
         }
     }
 
+    if options.learn_after > 0 {
+        summary.rules_created = learn_rules(
+            store,
+            snapshot,
+            taxonomy,
+            &applied_now,
+            &tags.applied,
+            options.learn_after,
+            options.apply,
+        )
+        .await?;
+    }
+
     Ok(summary)
+}
+
+/// Proposes and, when applying, creates payee rules. Returns how many were created or
+/// would be created.
+pub async fn learn_rules(
+    store: &dyn ActualStore,
+    snapshot: &Snapshot,
+    taxonomy: &Taxonomy,
+    applied_now: &[Applied],
+    applied_tag: &str,
+    learn_after: usize,
+    apply: bool,
+) -> Result<usize> {
+    let rules = store.rules().await?;
+    let candidates = learn::candidates(snapshot, applied_now, &rules, applied_tag, learn_after);
+    let mode = if apply { "apply" } else { "dry-run" };
+    for candidate in &candidates {
+        let label = taxonomy
+            .label_for_category(&candidate.category_id)
+            .unwrap_or(candidate.category_id.as_str());
+        println!(
+            "{mode}  RULE   {:<32}  -> {label} (seen {} times)",
+            truncate(&candidate.payee_name, 32),
+            candidate.count
+        );
+        if apply {
+            store.create_rule(&candidate.rule()).await?;
+        }
+    }
+    Ok(candidates.len())
 }
 
 fn skip_key(reason: Skip) -> String {
@@ -203,8 +255,8 @@ impl Summary {
         }
         let verb = if apply { "written" } else { "would write" };
         out.push_str(&format!(
-            "{verb}: {} applied, {} flagged, {} missed, {} failed\n",
-            self.applied, self.flagged, self.missed, self.failed
+            "{verb}: {} applied, {} flagged, {} missed, {} failed, {} rules\n",
+            self.applied, self.flagged, self.missed, self.failed, self.rules_created
         ));
         out.push_str(&format!("Jev input tokens: {}\n", self.input_tokens));
         out

@@ -116,6 +116,36 @@ pub struct ImportOptions {
     pub payee_normalization: String,
 }
 
+/// One condition or action of an Actual rule, as its API spells them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuleClause {
+    pub field: String,
+    pub op: String,
+    pub value: serde_json::Value,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// An Actual rule. `stage` is `null` for the default stage, as Actual's own learned
+/// payee rules are stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Rule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(rename = "conditionsOp", default = "default_conditions_op")]
+    pub conditions_op: String,
+    #[serde(default)]
+    pub conditions: Vec<RuleClause>,
+    #[serde(default)]
+    pub actions: Vec<RuleClause>,
+}
+
+fn default_conditions_op() -> String {
+    "and".to_string()
+}
+
 #[async_trait]
 pub trait ActualStore: Send + Sync {
     async fn accounts(&self) -> Result<Vec<Account>>;
@@ -132,6 +162,8 @@ pub trait ActualStore: Send + Sync {
         transactions: &[NewTransaction],
         options: &ImportOptions,
     ) -> Result<ImportResult>;
+    async fn rules(&self) -> Result<Vec<Rule>>;
+    async fn create_rule(&self, rule: &Rule) -> Result<()>;
 }
 
 /// One read of everything a run needs, so lookups during the run are in memory.

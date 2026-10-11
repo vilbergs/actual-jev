@@ -58,6 +58,10 @@ pub struct PolicyConfig {
     /// Confidence at or above which a category is written without review.
     #[serde(default = "default_apply_threshold")]
     pub apply_threshold: f64,
+    /// After this many confident applies agree on a payee's category, create an Actual
+    /// rule for it so the payee never reaches Jev again. 0 turns this off.
+    #[serde(default = "default_learn_after")]
+    pub learn_after: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,6 +147,7 @@ impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
             apply_threshold: default_apply_threshold(),
+            learn_after: default_learn_after(),
         }
     }
 }
@@ -184,6 +189,9 @@ fn default_max_retries() -> u32 {
 fn default_apply_threshold() -> f64 {
     0.85
 }
+fn default_learn_after() -> usize {
+    2
+}
 fn default_applied_tag() -> String {
     "#jev".to_string()
 }
@@ -212,6 +220,7 @@ mod tests {
         assert_eq!(config.actual.since_days, 90);
         assert_eq!(config.jev.model, "jev-latest");
         assert_eq!(config.policy.apply_threshold, 0.85);
+        assert_eq!(config.policy.learn_after, 2);
         assert_eq!(config.tags.flagged, "#jev-flag");
     }
 

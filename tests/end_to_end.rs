@@ -54,6 +54,12 @@ async fn mock_budget(actual: &MockServer, transactions: Value) {
         .mount(actual)
         .await;
     Mock::given(method("GET"))
+        .and(path(format!("{base}/rules")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .with_priority(10)
+        .mount(actual)
+        .await;
+    Mock::given(method("GET"))
         .and(path(format!("{base}/accounts/a2/transactions")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
         .mount(actual)
@@ -85,6 +91,7 @@ Groceries = "Supermarkets"
 
 [policy]
 apply_threshold = 0.85
+learn_after = 1
 
 [import]
 account = "Checking"
@@ -174,6 +181,20 @@ async fn run_applies_flags_and_misses_by_confidence() {
         .mount(&actual)
         .await;
 
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/budgets/{SYNC}/rules")))
+        .and(body_partial_json(json!({ "rule": {
+            "stage": null,
+            "conditionsOp": "and",
+            "conditions": [{ "field": "payee", "op": "is", "value": "p1", "type": "id" }],
+            "actions": [{ "field": "category", "op": "set", "value": "c1", "type": "id" }]
+        }})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "id": "r1" } })))
+        .expect(1)
+        .named("rule for ICA")
+        .mount(&actual)
+        .await;
+
     let dir = tempdir();
     let config = write_config(&dir, &actual, &jev);
 
@@ -182,8 +203,9 @@ async fn run_applies_flags_and_misses_by_confidence() {
     assert!(out.contains("Dry run"), "{out}");
     assert!(out.contains("APPLY"), "{out}");
     assert!(out.contains("FLAG"), "{out}");
+    assert!(out.contains("RULE   ICA"), "{out}");
     assert!(
-        out.contains("would write: 1 applied, 1 flagged, 0 missed"),
+        out.contains("would write: 1 applied, 1 flagged, 0 missed, 0 failed, 1 rules"),
         "{out}"
     );
     assert_eq!(
@@ -197,11 +219,22 @@ async fn run_applies_flags_and_misses_by_confidence() {
         0,
         "a dry run must not write"
     );
+    assert_eq!(
+        actual
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        0,
+        "a dry run must not create rules"
+    );
 
     let (ok, out) = jevcat(&config, &["run", "--apply"]);
     assert!(ok, "{out}");
     assert!(
-        out.contains("written: 1 applied, 1 flagged, 0 missed"),
+        out.contains("written: 1 applied, 1 flagged, 0 missed, 0 failed, 1 rules"),
         "{out}"
     );
     assert!(out.contains("skipped     1  transfer"), "{out}");
@@ -294,6 +327,16 @@ async fn import_sends_rows_then_categorizes_only_the_added_ones() {
         .expect(1)
         .mount(&jev)
         .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/budgets/{SYNC}/rules")))
+        .and(body_partial_json(json!({ "rule": {
+            "conditions": [{ "field": "payee", "op": "is", "value": "p1" }],
+            "actions": [{ "field": "category", "op": "set", "value": "c1" }]
+        }})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "id": "r1" } })))
+        .expect(1)
+        .mount(&actual)
+        .await;
     Mock::given(method("PATCH"))
         .and(path(format!("/v1/budgets/{SYNC}/transactions/new1")))
         .and(body_partial_json(
@@ -318,7 +361,7 @@ async fn import_sends_rows_then_categorizes_only_the_added_ones() {
     assert!(out.contains("2 rows"), "{out}");
     assert!(out.contains("Import: 1 added, 1 matched existing"), "{out}");
     assert!(
-        out.contains("written: 1 applied, 0 flagged, 0 missed"),
+        out.contains("written: 1 applied, 0 flagged, 0 missed, 0 failed, 1 rules"),
         "{out}"
     );
     actual.verify().await;
@@ -461,4 +504,63 @@ fn tempdir() -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[tokio::test]
+async fn learn_creates_rules_from_earlier_tags_and_skips_covered_payees() {
+    let actual = MockServer::start().await;
+    let jev = MockServer::start().await;
+    mock_budget(
+        &actual,
+        json!([
+            // ICA: applied by Jev twice, agrees -> rule
+            { "id": "t1", "account": "a1", "date": "2026-10-08", "amount": -100, "payee": "p1", "category": "c1", "notes": "#jev" },
+            { "id": "t2", "account": "a1", "date": "2026-10-07", "amount": -100, "payee": "p1", "category": "c1", "notes": "weekly #jev" },
+            // Espresso House: applied twice but a person moved one -> no rule
+            { "id": "t3", "account": "a1", "date": "2026-10-06", "amount": -100, "payee": "p2", "category": "c2", "notes": "#jev" },
+            { "id": "t4", "account": "a1", "date": "2026-10-05", "amount": -100, "payee": "p2", "category": "c2", "notes": "#jev" },
+            { "id": "t5", "account": "a1", "date": "2026-10-04", "amount": -100, "payee": "p2", "category": "c1", "notes": null }
+        ]),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/v1/budgets/{SYNC}/rules")))
+        .and(body_partial_json(json!({ "rule": {
+            "conditions": [{ "field": "payee", "op": "is", "value": "p1" }],
+            "actions": [{ "field": "category", "op": "set", "value": "c1" }]
+        }})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "id": "r1" } })))
+        .expect(1)
+        .mount(&actual)
+        .await;
+
+    let dir = tempdir();
+    let config = write_config(&dir, &actual, &jev);
+
+    let (ok, out) = jevcat(&config, &["learn", "--after", "2"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("RULE   ICA"), "{out}");
+    assert!(!out.contains("Espresso"), "{out}");
+    assert!(out.contains("would create 1 rules"), "{out}");
+
+    let (ok, out) = jevcat(&config, &["learn", "--after", "2", "--apply"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("created 1 rules"), "{out}");
+    actual.verify().await;
+    assert!(jev.received_requests().await.unwrap().is_empty());
+
+    // Once a rule covers ICA, nothing is proposed.
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/budgets/{SYNC}/rules")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [
+            { "id": "r1", "stage": null, "conditionsOp": "and",
+              "conditions": [{ "field": "payee", "op": "is", "value": "p1", "type": "id" }],
+              "actions": [{ "field": "category", "op": "set", "value": "c1", "type": "id" }] }
+        ]})))
+        .with_priority(1)
+        .mount(&actual)
+        .await;
+    let (ok, out) = jevcat(&config, &["learn", "--after", "2"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("would create 0 rules"), "{out}");
 }

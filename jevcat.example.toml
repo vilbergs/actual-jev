@@ -26,6 +26,7 @@ max_retries = 2
 
 [policy]
 apply_threshold = 0.85   # run `jevcat calibrate` and paste its suggestion here
+learn_after = 2          # confident applies before a payee gets an Actual rule; 0 disables
 
 [tags]
 # applied = "#jev"

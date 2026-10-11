@@ -13,6 +13,7 @@ jevcat import statement.csv      import a bank CSV into Actual, then categorize 
 jevcat run                       categorize what is already uncategorized (dry run)
 jevcat run --apply               ...and write it
 jevcat calibrate                 measure accuracy per confidence on your categorized history
+jevcat learn --apply             turn payees Jev has placed consistently into Actual rules
 jevcat list                      show what a run would look at, without calling Jev
 ```
 
@@ -86,6 +87,18 @@ would be added without changing the budget. `--no-categorize` imports only.
 
 Search `#jev-flag` in Actual to review the guesses. Tags are the only state the tool
 keeps; `--rerun-missed` retries the `#jev-miss` ones.
+
+## Rules, so Jev is asked less over time
+
+Once a payee has been applied with confidence `policy.learn_after` times (default 2) and
+every applied transaction of that payee agrees on the category, a run creates an Actual
+rule `payee is X → set category Y`. From then on Actual categorizes that payee itself on
+import or bank sync and it never reaches Jev. A rule is not created when a transaction
+you categorized by hand disagrees, or when a rule for the payee already exists.
+`jevcat learn` does the same pass on demand without calling Jev.
+
+Actual's own category learning (the toggle at the bottom of the Payees page) does the
+same for transactions you categorize by hand. Keep it on; the two complement each other.
 
 Skipped and never touched: transfers, split parents, starting balances, off-budget
 accounts, rows with no payee, and anything that already has a category.
