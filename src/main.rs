@@ -85,6 +85,15 @@ enum Command {
         /// Import only; leave the new rows uncategorized.
         #[arg(long)]
         no_categorize: bool,
+        /// Ignore CSV rows dated before this day (YYYY-MM-DD).
+        #[arg(long)]
+        from: Option<String>,
+        /// Ignore CSV rows dated after this day (YYYY-MM-DD).
+        #[arg(long)]
+        until: Option<String>,
+        /// Keep an imported_id on every row, even where it overlaps bank-synced history.
+        #[arg(long)]
+        keep_ids: bool,
     },
 }
 
@@ -203,6 +212,9 @@ async fn main() -> Result<()> {
             account,
             dry_run,
             no_categorize,
+            from,
+            until,
+            keep_ids,
         } => {
             let import_config = config
                 .import
@@ -217,8 +229,63 @@ async fn main() -> Result<()> {
                 format!("no account {account_name:?}; accounts are {names:?}")
             })?;
 
-            let rows = import::read_csv(&csv, import_config)?;
-            anyhow::ensure!(!rows.is_empty(), "{} holds no transactions", csv.display());
+            let parsed = import::read_csv(&csv, import_config)?;
+            anyhow::ensure!(
+                !parsed.is_empty(),
+                "{} holds no transactions",
+                csv.display()
+            );
+            for bound in [&from, &until].into_iter().flatten() {
+                anyhow::ensure!(
+                    chrono::NaiveDate::parse_from_str(bound, "%Y-%m-%d").is_ok(),
+                    "--from and --until take YYYY-MM-DD, got {bound:?}"
+                );
+            }
+
+            // Everything Actual already holds for this account, however old, so rows that
+            // overlap bank-synced history can be matched instead of duplicated.
+            let history = store.transactions(&account.id, "1900-01-01").await?;
+            let synced: Vec<&str> = history
+                .iter()
+                .filter(|tx| tx.imported_id.as_deref().is_some_and(|id| !id.is_empty()))
+                .map(|tx| tx.date.as_str())
+                .collect();
+            let synced_range = synced
+                .iter()
+                .min()
+                .zip(synced.iter().max())
+                .map(|(lo, hi)| (*lo, *hi));
+            if let Some((lo, hi)) = synced_range {
+                println!(
+                    "Account {} already holds synced or id-bearing rows from {lo} to {hi}",
+                    account.name
+                );
+            }
+
+            let prepared = import::prepare(
+                parsed,
+                from.as_deref(),
+                until.as_deref(),
+                synced_range,
+                keep_ids,
+            );
+            if prepared.dropped_before_from + prepared.dropped_after_until > 0 {
+                println!(
+                    "Skipping {} rows before --from and {} rows after --until",
+                    prepared.dropped_before_from, prepared.dropped_after_until
+                );
+            }
+            if prepared.ids_dropped > 0 {
+                println!(
+                    "{} rows overlap that history and will be matched by amount and date (pass --keep-ids to keep their ids)",
+                    prepared.ids_dropped
+                );
+            }
+            let rows = prepared.rows;
+            anyhow::ensure!(
+                !rows.is_empty(),
+                "no rows left to import after the date bounds"
+            );
             let earliest = rows
                 .iter()
                 .map(|row| row.date.as_str())

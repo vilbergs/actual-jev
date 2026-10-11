@@ -128,6 +128,7 @@ mod tests {
             amount: -100,
             payee: Some(payee.into()),
             imported_payee: None,
+            imported_id: None,
             category: category.map(str::to_string),
             notes: notes.map(str::to_string),
             transfer_id: None,

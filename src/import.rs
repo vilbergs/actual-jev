@@ -139,10 +139,56 @@ pub fn parse_csv(text: &str, config: &ImportConfig) -> Result<Vec<NewTransaction
             payee_name: payee.clone(),
             imported_payee: payee,
             notes,
-            imported_id,
+            imported_id: Some(imported_id),
         });
     }
     Ok(out)
+}
+
+/// What `prepare` did to the parsed rows.
+#[derive(Debug, Default, PartialEq)]
+pub struct Prepared {
+    pub rows: Vec<NewTransaction>,
+    pub dropped_before_from: usize,
+    pub dropped_after_until: usize,
+    /// Rows whose id was removed because they fall inside bank-synced history.
+    pub ids_dropped: usize,
+}
+
+/// Applies the date bounds and decides which rows keep their `imported_id`.
+///
+/// Actual only de-duplicates by amount and date when at least one side has no id. Rows
+/// the bank sync already wrote carry the bank's own id, so a CSV row for the same
+/// purchase with a jevcat id would be added again. Inside `synced_range` (the dates
+/// covered by rows that have an id) the id is therefore dropped, unless `keep_ids`.
+pub fn prepare(
+    rows: Vec<NewTransaction>,
+    from: Option<&str>,
+    until: Option<&str>,
+    synced_range: Option<(&str, &str)>,
+    keep_ids: bool,
+) -> Prepared {
+    let mut out = Prepared::default();
+    for mut row in rows {
+        if from.is_some_and(|from| row.date.as_str() < from) {
+            out.dropped_before_from += 1;
+            continue;
+        }
+        if until.is_some_and(|until| row.date.as_str() > until) {
+            out.dropped_after_until += 1;
+            continue;
+        }
+        if !keep_ids
+            && synced_range
+                .is_some_and(|(lo, hi)| row.date.as_str() >= lo && row.date.as_str() <= hi)
+            && row.imported_id.is_some()
+        {
+            row.imported_id = None;
+            out.ids_dropped += 1;
+        }
+        out.rows.push(row);
+    }
+    out
 }
 
 fn resolve_columns(config: &ImportConfig, headers: &[String]) -> Result<Columns> {
@@ -288,7 +334,11 @@ mod tests {
         assert_eq!(rows[0].amount, -84750);
         assert_eq!(rows[0].payee_name, "ICA KVANTUM LIDINGÖ");
         assert_eq!(rows[0].notes.as_deref(), Some("Kortköp"));
-        assert!(rows[0].imported_id.starts_with("jevcat-"));
+        assert!(rows[0]
+            .imported_id
+            .as_deref()
+            .unwrap()
+            .starts_with("jevcat-"));
         assert_eq!(rows[1].amount, 2_500_000);
         assert_eq!(rows[1].notes, None);
         assert_ne!(rows[0].imported_id, rows[1].imported_id);
@@ -304,7 +354,7 @@ mod tests {
 
         config.id_column = Some("Meddelande".into());
         let with_id = parse_csv(text, &config).unwrap();
-        assert_eq!(with_id[0].imported_id, "x");
+        assert_eq!(with_id[0].imported_id.as_deref(), Some("x"));
     }
 
     #[test]
@@ -329,5 +379,56 @@ mod tests {
         config.payee_column = "Nope".into();
         let error = parse_csv("Bokföringsdag;Belopp;Rubrik\n", &config).unwrap_err();
         assert!(error.to_string().contains("Nope"));
+    }
+
+    fn row(date: &str) -> NewTransaction {
+        NewTransaction {
+            date: date.into(),
+            amount: -100,
+            payee_name: "X".into(),
+            imported_payee: "X".into(),
+            notes: None,
+            imported_id: Some(format!("id-{date}")),
+        }
+    }
+
+    #[test]
+    fn prepare_bounds_dates_and_drops_ids_inside_synced_history() {
+        let rows = vec![
+            row("2026-09-01"),
+            row("2026-09-20"),
+            row("2026-10-05"),
+            row("2026-10-20"),
+        ];
+        let prepared = prepare(
+            rows.clone(),
+            Some("2026-09-10"),
+            Some("2026-10-10"),
+            Some(("2026-10-01", "2026-10-31")),
+            false,
+        );
+        assert_eq!(prepared.dropped_before_from, 1);
+        assert_eq!(prepared.dropped_after_until, 1);
+        assert_eq!(prepared.ids_dropped, 1);
+        assert_eq!(prepared.rows.len(), 2);
+        assert_eq!(
+            prepared.rows[0].imported_id.as_deref(),
+            Some("id-2026-09-20")
+        );
+        assert_eq!(prepared.rows[1].imported_id, None);
+
+        let kept = prepare(
+            rows.clone(),
+            None,
+            None,
+            Some(("2026-01-01", "2026-12-31")),
+            true,
+        );
+        assert_eq!(kept.ids_dropped, 0);
+        assert!(kept.rows.iter().all(|r| r.imported_id.is_some()));
+
+        let untouched = prepare(rows, None, None, None, false);
+        assert_eq!(untouched.rows.len(), 4);
+        assert_eq!(untouched.ids_dropped, 0);
     }
 }

@@ -275,6 +275,7 @@ mod tests {
             amount: -1000,
             payee: Some("p1".into()),
             imported_payee: None,
+            imported_id: None,
             category: None,
             notes: notes.map(str::to_string),
             transfer_id: None,

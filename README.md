@@ -77,6 +77,21 @@ jevcat import ~/Downloads/statement.csv --account Checking
 `--dry-run` parses and sends the import with Actual's dry-run flag, so you see what
 would be added without changing the budget. `--no-categorize` imports only.
 
+### Filling a gap next to bank sync
+
+Actual's bank sync never reaches further back than 90 days, so an account linked today
+has a hole between its last manual import and three months ago. Export that period from
+the bank and import it with bounds:
+
+```sh
+jevcat import statement.csv --from 2026-05-01 --until 2026-07-12
+```
+
+Rows that overlap what the sync already wrote are sent without an id, so Actual matches
+them by amount and date instead of adding them again. Rows in the gap keep a stable id.
+Pass `--keep-ids` to disable that, for example when the CSV carries the bank's own
+transaction id and the sync uses the same one.
+
 ## What a run writes
 
 | Jev says | Confidence | Action | Note tag |

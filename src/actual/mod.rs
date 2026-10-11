@@ -65,6 +65,8 @@ pub struct Transaction {
     #[serde(default)]
     pub imported_payee: Option<String>,
     #[serde(default)]
+    pub imported_id: Option<String>,
+    #[serde(default)]
     pub category: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
@@ -97,8 +99,11 @@ pub struct NewTransaction {
     pub imported_payee: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    /// Stable per bank row, so a re-import of the same file adds nothing twice.
-    pub imported_id: String,
+    /// Stable per bank row, so a re-import of the same file adds nothing twice. Left out
+    /// for rows that overlap bank-synced history, so Actual matches them by amount and
+    /// date instead of treating a different id as a different transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

@@ -564,3 +564,88 @@ async fn learn_creates_rules_from_earlier_tags_and_skips_covered_payees() {
     assert!(ok, "{out}");
     assert!(out.contains("would create 0 rules"), "{out}");
 }
+
+#[tokio::test]
+async fn import_drops_ids_where_rows_overlap_synced_history_and_honours_bounds() {
+    let actual = MockServer::start().await;
+    let jev = MockServer::start().await;
+    // The account holds synced rows (they carry the bank's imported_id) for October.
+    mock_budget(
+        &actual,
+        json!([
+            { "id": "s1", "account": "a1", "date": "2026-10-03", "amount": -500, "payee": "p2",
+              "imported_id": "bank-1", "category": "c2" },
+            { "id": "s2", "account": "a1", "date": "2026-10-09", "amount": -12900, "payee": "p1",
+              "imported_id": "bank-2", "category": "c1" }
+        ]),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/v1/budgets/{SYNC}/accounts/a1/transactions/import"
+        )))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(json!({ "data": { "added": [], "updated": ["s2"] } })),
+        )
+        .expect(1)
+        .mount(&actual)
+        .await;
+
+    let dir = tempdir();
+    let config = write_config(&dir, &actual, &jev);
+    let csv = dir.join("statement.csv");
+    std::fs::write(
+        &csv,
+        "Datum;Belopp;Text\n\
+         2026-08-15;-10,00;OLD\n\
+         2026-09-20;-20,00;GAP\n\
+         2026-10-09;-129,00;ICA NÄRA\n\
+         2026-10-20;-30,00;FUTURE\n",
+    )
+    .unwrap();
+
+    let (ok, out) = jevcat(
+        &config,
+        &[
+            "import",
+            csv.to_str().unwrap(),
+            "--from",
+            "2026-09-01",
+            "--until",
+            "2026-10-15",
+            "--no-categorize",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("from 2026-10-03 to 2026-10-09"), "{out}");
+    assert!(
+        out.contains("Skipping 1 rows before --from and 1 rows after --until"),
+        "{out}"
+    );
+    assert!(out.contains("1 rows overlap that history"), "{out}");
+
+    let import = actual
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.url.path().ends_with("/import"))
+        .unwrap();
+    let body: Value = serde_json::from_slice(&import.body).unwrap();
+    let rows = body["transactions"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{body}");
+    assert_eq!(rows[0]["date"], "2026-09-20");
+    assert!(
+        rows[0]["imported_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("jevcat-"),
+        "gap row keeps its id"
+    );
+    assert_eq!(rows[1]["date"], "2026-10-09");
+    assert!(
+        rows[1].get("imported_id").is_none(),
+        "overlapping row is matched by amount and date: {body}"
+    );
+}
